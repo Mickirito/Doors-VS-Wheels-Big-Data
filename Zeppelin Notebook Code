@@ -1,0 +1,69 @@
+// Class definitions we need in the remainder:
+import org.apache.hadoop.io.NullWritable
+import de.l3s.concatgz.io.warc.{WarcGzInputFormat,WarcWritable}
+import de.l3s.concatgz.data.WarcRecord
+
+import org.apache.spark.SparkConf
+import org.apache.spark.sql.SparkSession
+
+import org.apache.commons.lang3.StringUtils
+
+import org.jsoup.Jsoup
+import org.jsoup.nodes.{Document,Element}
+import collection.JavaConverters._
+
+val warcfile = s"file:///opt/hadoop/rubigdata/CC-MAIN-20210410105831-20210410135831-00420.warc.gz"
+
+// Overrule default settings
+val sparkConf = new SparkConf()
+                      .setAppName("RUBigData WARC4Spark 2021")
+                      .set("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
+                      .registerKryoClasses(Array(classOf[WarcRecord]))
+//                      .set("spark.dynamicAllocation.enabled", "true")
+implicit val sparkSession = SparkSession.builder().config(sparkConf).getOrCreate()
+val sc = sparkSession.sparkContext
+
+val warcs = sc.newAPIHadoopFile(
+        warcfile,
+        classOf[WarcGzInputFormat],             // InputFormat
+        classOf[NullWritable],                  // Key
+        classOf[WarcWritable]                   // Value
+)
+
+//Gather the content of the web pages
+val wb = warcs.map( wr => wr._2.getRecord().getHttpStringBody()).
+                map{ wb => {
+                        val d = Jsoup.parse(wb)
+                        val t = d.title()
+                        val links = d.select("body").asScala
+                        links.map(l => (t,l.text())).toIterator
+                    }
+                }.
+                flatMap(identity)
+
+//Define the regular expression for parsing words
+val regex = "[a-zA-Z]+"
+
+//Split the plain text of all pages into seperate words and count them
+val words = wb.map( _._1).
+            flatMap(line => line.split(" ")).
+            filter(wb => wb matches regex).
+            map(word => (word,1)).
+            groupBy(_._1).
+            map{ case (key, list) => key -> list.map( _._2 ).reduce(_ + _) }
+
+//Count all cases of door and doors
+val door = words.filter(_._1.toLowerCase() == "door").collect.map( _._2 ).sum
+val doors = words.filter(_._1.toLowerCase() == "doors").collect.map( _._2 ).sum
+val doorCount = door + doors
+
+//Count all cases of wheel and wheels
+val wheel = words.filter(_._1.toLowerCase() == "wheel").collect.map( _._2 ).sum
+val wheels = words.filter(_._1.toLowerCase() == "wheels").collect.map( _._2 ).sum
+val wheelCount = wheel + wheels
+
+//Print number of doors and wheels
+println("Number of doors: " + doorCount)
+println("Number of wheels: " + wheelCount)
+  
+sparkSession.stop()
